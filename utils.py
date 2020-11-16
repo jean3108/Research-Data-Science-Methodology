@@ -6,6 +6,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
 import torch.nn.functional as F
 
+from sklearn.feature_selection import RFE
 from sklearn.manifold import Isomap, LocallyLinearEmbedding
 from sklearn.decomposition import PCA, KernelPCA, TruncatedSVD, NMF, FactorAnalysis, FastICA, LatentDirichletAllocation
 from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection, johnson_lindenstrauss_min_dim
@@ -22,7 +23,54 @@ class CorrelatedFeats():
         #Sorted by coef DESC 
         #For each couple, remove one column until you get n_components OR the coef < coefMin
         self.deletedColumns = []#index of deleted columns
-        pass
+        X = pd.DataFrame(predictors)
+        corrs = pd.DataFrame(X).corr()
+
+        #Récupération des corrélations des couples de features et tri décroissant
+        corrs_list = []
+        for i in range(X.shape[1]):
+            for j in range(i):
+                corrs_list.append(((i, j), corrs[i][j]))
+        corrs_list = sorted(corrs_list, reverse=True, key=lambda e: e[1])
+
+        #Sélection des features à supprimer et à garder Non optimisé (on supprime la features ayant l'index le plus haut)
+        #Il faudrait choisir les features a supprimer dans un couple de façon à maximiser le nombre de features supprimés.
+        def tryToDel(f1, f2, coef):
+            if(coef>self.coefMin):
+                if((f1 not in delFeats) and (f1 not in keepFeats) and (f2 not in delFeats)):
+                    delFeats.append(f1)
+                    keepFeats.append(f2)
+                elif((f2 not in delFeats) and (f2 not in keepFeats) and (f1 not in delFeats)):
+                    delFeats.append(f2)
+                    keepFeats.append(f1)
+
+        keepFeats = []
+        delFeats = []
+        for (f1, f2), coef in corrs_list:
+            tryToDel(f1, f2, coef)
+
+        self.deletedColumns = delFeats
+    
+    def transform(self, X):
+        return np.delete(a, self.deletedColumns, 1)
+
+class CorrelatedFeatsWithTarget():
+    
+    def __init__(self, n_components, coefMin, method):
+        self.n_components = n_components
+        self.coefMin = coefMin
+        self.method = method
+
+    
+    def fit(self, X, y):
+        self.deletedColumns = []#index of deleted columns
+        X = pd.DataFrame(X)
+        X["target"] = y
+        corrs = pd.DataFrame(X).corr(method=self.method)["target"].drop("target")
+        for i, coef in enumerate(corrs):
+            if(coef>self.coefMin):
+                self.deletedColumns.append(i)
+
     
     def transform(self, X):
         return np.delete(a, self.deletedColumns, 1)
@@ -134,16 +182,20 @@ class ChangeRepresentation():
             self.changeRep = self.autoencoder(parameters)
         elif(algo=="removeCorrelatedFeatures"):
             self.changeRep = self.correlatedFeats(parameters)
+        elif(algo=="removeCorrelatedFeaturesWithTarget"):
+            = self.correlatedFeatsWithTarget(parameters)
+        elif(algo=="RFE"):
+            self.changeRep = self.rfe(parameters)
             
         #virer feaztures non corélé à la sortie
         #classif puis tf-idf
 
     
     
-    def fit(self, X):
+    def fit(self, X, y=None):
         
         if(self.changeRep!=None):
-            self.changeRep.fit(X)
+            self.changeRep.fit(X, y)
     
     def transform(self, X):
         X = torch.tensor(X, dtype=torch.float)
@@ -327,5 +379,22 @@ class ChangeRepresentation():
        
         #algo Object
         return CorrelatedFeats(n_components=n_components, coefMin=coefMin)
+
         
+    def correlatedFeatsWithTarget(self, parameters):
+        #defaut parameters
+        n_components = parameters["n_components"] if "n_components" in parameters else None
+        coefMin = parameters["coefMin"] if "coefMin" in parameters else 0.9
+       
+        #algo Object
+        return CorrelatedFeatsWithTarget(n_components=n_components, coefMin=coefMin)
+
+    def rfe(self, parameters):
+        #defaut parameters
+        n_components = parameters["n_components"] if "n_components" in parameters else None
+        estimator = parameters["estimator"] if "estimator" in parameters else SVC(kernel="linear")
+        method = parameters["method"] if "method" in parameters else "pearson"
+         
+        #algo Object
+        return RFE(estimator, n_features_to_select=n_components, method=method)
        
